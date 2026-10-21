@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <exclude domain="file" path="secure" />
+    <exclude domain="file" path="conversations.json" />
+    <exclude domain="file" path="attachments" />
+    <exclude domain="file" path="usage_history.json" />
+</full-backup-content>

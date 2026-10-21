@@ -1,0 +1,137 @@
+name: Android Release APK (signed)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-release:
+    name: Build signed release APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools platforms;android-36 build-tools;36.0.0"
+          log-accepted-android-sdk-licenses: false
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      - name: Verify release signing secrets exist
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -n "${KEYSTORE_BASE64}" ] || missing+=("ANDROID_KEYSTORE_BASE64")
+          [ -n "${KEYSTORE_PASSWORD}" ] || missing+=("ANDROID_KEYSTORE_PASSWORD")
+          [ -n "${KEY_ALIAS}" ] || missing+=("ANDROID_KEY_ALIAS")
+          [ -n "${KEY_PASSWORD}" ] || missing+=("ANDROID_KEY_PASSWORD")
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::Release signing is not configured. Missing repository secrets: ${missing[*]}"
+            echo "Add the secrets described in README.md. Debug builds remain available in the Android APK workflow."
+            exit 1
+          fi
+          echo "All required signing secrets are present."
+
+      - name: Decode release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          KEYSTORE_PATH="${RUNNER_TEMP}/release.keystore"
+          printf '%s' "${KEYSTORE_BASE64}" | base64 --decode > "${KEYSTORE_PATH}"
+          chmod 600 "${KEYSTORE_PATH}"
+          test -s "${KEYSTORE_PATH}"
+          echo "ANDROID_KEYSTORE_PATH=${KEYSTORE_PATH}" >> "$GITHUB_ENV"
+
+      - name: Build signed release APK
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Verify signed APK
+        id: apk
+        run: |
+          set -euo pipefail
+          APK="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' | head -n 1)"
+          if [ -z "$APK" ]; then
+            echo "::error::Gradle did not produce a release APK."
+            exit 1
+          fi
+          if [ ! -s "$APK" ]; then
+            echo "::error::The release APK is empty: $APK"
+            exit 1
+          fi
+          APKSIGNER="${ANDROID_HOME}/build-tools/36.0.0/apksigner"
+          if [ -x "${APKSIGNER}" ]; then
+            "${APKSIGNER}" verify --verbose "$APK"
+          else
+            echo "::error::apksigner was not found; refusing to publish an unverified APK."
+            exit 1
+          fi
+          SIZE_BYTES="$(stat -c%s "$APK")"
+          APK_NAME="$(basename "$APK")"
+          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
+          echo "APK_NAME=$APK_NAME" >> "$GITHUB_ENV"
+          echo "APK_SIZE_BYTES=$SIZE_BYTES" >> "$GITHUB_ENV"
+          echo "Verified signed release APK $APK_NAME ($SIZE_BYTES bytes)."
+
+      - name: Upload signed release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Universal-AI-Agent-release-APK
+          path: ${{ env.APK_PATH }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Write release workflow summary
+        if: always()
+        env:
+          APK_OUTCOME: ${{ steps.apk.outcome }}
+        run: |
+          {
+            echo "## Universal AI Agent — signed release"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Branch | \`${GITHUB_REF_NAME}\` |"
+            echo "| Commit | \`${GITHUB_SHA}\` |"
+            echo "| Build variant | release (signed) |"
+            if [ -n "${APK_NAME:-}" ]; then
+              echo "| APK filename | \`${APK_NAME}\` |"
+              echo "| APK size | ${APK_SIZE_BYTES} bytes |"
+              echo "| APK verification | \`${APK_OUTCOME}\` |"
+            else
+              echo "| APK | not produced or verification failed |"
+            fi
+            echo ""
+            echo "This workflow only runs manually. Signing values must be configured as repository secrets; the keystore and passwords are never committed."
+          } >> "$GITHUB_STEP_SUMMARY"

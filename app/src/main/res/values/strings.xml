@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Universal AI Agent</string>
+    <string name="accessibility_label">Universal AI Agent automation</string>
+    <string name="accessibility_description">Reads visible screen elements and performs supported actions only while a task you start is running. Does not bypass lock screens, biometrics, passwords, or Android security dialogs.</string>
+    <string name="screen_channel_name">Screen understanding</string>
+    <string name="screen_notification_title">Screen sharing is active</string>
+    <string name="screen_notification_text">Frames are captured only when you tap Analyze. Tap Stop to end sharing.</string>
+    <string name="screen_notification_stop">Stop sharing</string>
+</resources>

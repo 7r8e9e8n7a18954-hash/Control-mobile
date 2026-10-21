@@ -1,0 +1,127 @@
+name: Android APK
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-debug:
+    name: Build debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools platforms;android-36 build-tools;36.0.0"
+          log-accepted-android-sdk-licenses: false
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      - name: Run unit tests
+        id: tests
+        run: ./gradlew testDebugUnitTest --no-daemon --stacktrace
+
+      - name: Build debug APK
+        id: build
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Verify APK and capture metadata
+        id: apk
+        run: |
+          set -euo pipefail
+          APK="$(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' | head -n 1)"
+          if [ -z "$APK" ]; then
+            echo "::error::Gradle did not produce a debug APK."
+            exit 1
+          fi
+          if [ ! -s "$APK" ]; then
+            echo "::error::The produced APK is empty: $APK"
+            exit 1
+          fi
+          SIZE_BYTES="$(stat -c%s "$APK")"
+          SIZE_HUMAN="$(du -h "$APK" | cut -f1)"
+          APK_NAME="$(basename "$APK")"
+          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
+          echo "APK_NAME=$APK_NAME" >> "$GITHUB_ENV"
+          echo "APK_SIZE_BYTES=$SIZE_BYTES" >> "$GITHUB_ENV"
+          echo "APK_SIZE_HUMAN=$SIZE_HUMAN" >> "$GITHUB_ENV"
+          echo "Verified $APK_NAME ($SIZE_HUMAN, $SIZE_BYTES bytes)."
+
+      - name: Upload debug APK
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: Universal-AI-Agent-debug-APK
+          path: ${{ env.APK_PATH }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload unit test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports
+          path: app/build/reports/tests/testDebugUnitTest
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Write workflow summary
+        if: always()
+        env:
+          TEST_OUTCOME: ${{ steps.tests.outcome }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          APK_OUTCOME: ${{ steps.apk.outcome }}
+          UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
+        run: |
+          {
+            echo "## Universal AI Agent — Android build"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Build status | \`${BUILD_OUTCOME:-not_run}\` |"
+            echo "| Branch | \`${GITHUB_REF_NAME}\` |"
+            echo "| Commit | \`${GITHUB_SHA}\` |"
+            echo "| Build variant | debug |"
+            echo "| Unit tests | \`${TEST_OUTCOME:-not_run}\` |"
+            echo "| APK verification | \`${APK_OUTCOME:-not_run}\` |"
+            if [ -n "${APK_NAME:-}" ]; then
+              echo "| APK filename | \`${APK_NAME}\` |"
+              echo "| APK size | ${APK_SIZE_HUMAN:-unknown} (${APK_SIZE_BYTES:-unknown} bytes) |"
+            else
+              echo "| APK filename | not produced |"
+              echo "| APK size | n/a |"
+            fi
+            echo "| Artifact | \`Universal-AI-Agent-debug-APK\` (retained 14 days) |"
+            echo "| Artifact upload | \`${UPLOAD_OUTCOME:-not_run}\` |"
+            echo ""
+            echo "Download the APK from the **Artifacts** section of this workflow run:"
+            echo "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo ""
+            echo "Test reports are uploaded as \`unit-test-reports\` when available."
+          } >> "$GITHUB_STEP_SUMMARY"
