@@ -2,17 +2,39 @@ package com.universalaiagent.automation
 
 import android.accessibilityservice.AccessibilityService
 import android.graphics.Rect
+import android.os.Handler
+import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import com.universalaiagent.UniversalAiAgentApp
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 
 class AgentAccessibilityService : AccessibilityService() {
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var overlay: AgentOverlay? = null
+    private var ttsEnabled = true
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
         connected.value = true
+        val application = application as? UniversalAiAgentApp
+        if (application != null) {
+            scope.launch {
+                application.container.settings.data.collect { settings ->
+                    ttsEnabled = settings.ttsEnabled
+                    overlay?.setAudioEnabled(ttsEnabled)
+                }
+            }
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
@@ -22,7 +44,44 @@ class AgentAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         if (instance === this) instance = null
         connected.value = false
+        hideAgentOverlay()
+        scope.cancel()
+        AgentRuntime.requestStop()
         super.onDestroy()
+    }
+
+    fun showAgentOverlay() {
+        mainHandler.post {
+            if (overlay != null) return@post
+            overlay = AgentOverlay(this).also { view ->
+                view.show(
+                    audioEnabled = ttsEnabled,
+                    onToggleAudio = { toggleAudio() },
+                    onStop = { AgentRuntime.requestStop() },
+                )
+            }
+        }
+    }
+
+    fun hideAgentOverlay() {
+        mainHandler.post {
+            overlay?.hide()
+            overlay = null
+        }
+    }
+
+    fun showAgentTap(x: Float, y: Float) {
+        overlay?.showTap(x, y)
+    }
+
+    private fun toggleAudio() {
+        val application = application as? UniversalAiAgentApp ?: return
+        scope.launch {
+            val next = !ttsEnabled
+            application.container.settings.setTtsEnabled(next)
+            ttsEnabled = next
+            overlay?.setAudioEnabled(next)
+        }
     }
 
     fun snapshot(): UiSnapshot? {
@@ -81,8 +140,8 @@ class AgentAccessibilityService : AccessibilityService() {
         fun current(): AgentAccessibilityService? = instance
         fun isConnected(): Boolean = instance != null
 
-        private const val MAX_ELEMENTS = 250
-        private const val MAX_VISITED = 1200
-        private const val MAX_DEPTH = 30
+        private const val MAX_ELEMENTS = 200
+        private const val MAX_VISITED = 1000
+        private const val MAX_DEPTH = 28
     }
 }

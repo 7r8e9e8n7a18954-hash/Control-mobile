@@ -36,7 +36,6 @@ import com.universalaiagent.ui.SettingsViewModel
 import com.universalaiagent.ui.VoiceViewModel
 import com.universalaiagent.ui.screens.AddProviderScreen
 import com.universalaiagent.ui.screens.ApiKeysScreen
-import com.universalaiagent.ui.screens.AutomationScreen
 import com.universalaiagent.ui.screens.ChatScreen
 import com.universalaiagent.ui.screens.DiagnosticsScreen
 import com.universalaiagent.ui.screens.HistoryScreen
@@ -124,6 +123,7 @@ class MainActivity : ComponentActivity() {
             composable("chat") {
                 ChatScreen(
                     viewModel = chatViewModel,
+                    automationViewModel = automationViewModel,
                     onHistory = { nav.navigate("history") },
                     onKeys = { nav.navigate("keys") },
                     onSettings = { nav.navigate("settings") },
@@ -131,7 +131,7 @@ class MainActivity : ComponentActivity() {
                     onRouting = { nav.navigate("routing") },
                     onDiagnostics = { nav.navigate("diagnostics") },
                     onScreen = { nav.navigate("screen") },
-                    onAutomation = { nav.navigate("automation") },
+                    onTasks = { nav.navigate("tasks") },
                 )
             }
 
@@ -188,9 +188,13 @@ class MainActivity : ComponentActivity() {
                 VoiceScreen(
                     viewModel = voiceViewModel,
                     onBack = { nav.popBackStack() },
-                    onSendToAutomation = { transcript ->
-                        automationViewModel.setInstruction(transcript)
-                        nav.navigate("automation")
+                    onSendToAgent = { transcript ->
+                        chatViewModel.updateInput(transcript)
+                        chatViewModel.setAgentMode(true)
+                        nav.navigate("chat") {
+                            popUpTo("chat") { inclusive = true }
+                            launchSingleTop = true
+                        }
                     },
                 )
             }
@@ -199,14 +203,6 @@ class MainActivity : ComponentActivity() {
                 ScreenUnderstandingScreen(
                     viewModel = screenViewModel,
                     onBack = { nav.popBackStack() },
-                )
-            }
-
-            composable("automation") {
-                AutomationScreen(
-                    viewModel = automationViewModel,
-                    onBack = { nav.popBackStack() },
-                    onOpenTasks = { nav.navigate("tasks") },
                 )
             }
 

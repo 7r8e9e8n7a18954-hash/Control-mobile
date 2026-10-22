@@ -4,7 +4,6 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,13 +16,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.RecordVoiceOver
+import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material3.Button
@@ -53,6 +51,7 @@ import com.universalaiagent.ui.components.InfoCard
 import com.universalaiagent.ui.components.MarkdownText
 import com.universalaiagent.ui.components.ScreenScaffold
 import com.universalaiagent.ui.components.StatusPill
+import com.universalaiagent.ui.components.VoiceOrb
 import com.universalaiagent.ui.theme.DangerRed
 import com.universalaiagent.ui.theme.SuccessGreen
 import com.universalaiagent.ui.theme.WarningAmber
@@ -61,7 +60,7 @@ import com.universalaiagent.ui.theme.WarningAmber
 fun VoiceScreen(
     viewModel: VoiceViewModel,
     onBack: () -> Unit,
-    onSendToAutomation: (String) -> Unit,
+    onSendToAgent: (String) -> Unit,
 ) {
     val ui by viewModel.ui.collectAsStateWithLifecycle()
     val voice by viewModel.voiceState.collectAsStateWithLifecycle()
@@ -98,21 +97,16 @@ fun VoiceScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             InfoCard(
-                title = "Push-to-talk avoids accidental commands",
-                body = "The assistant listens only while you hold the microphone button. Android speech " +
-                    "recognition may use a network service depending on the device. Media audio from other " +
-                    "apps is not deliberately captured, and the app stops TTS before listening to prevent echo.",
+                title = "Live push-to-talk orb",
+                body = "Hold the orb and speak. The rings react to your voice level in real time. " +
+                    "Your speech uses one strong haptic pulse, and the assistant's spoken reply uses a " +
+                    "distinct double pulse. TTS stops before listening to prevent echo.",
             )
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(22.dp))
 
             Box(
                 modifier = Modifier
-                    .size(150.dp)
-                    .background(
-                        if (voice.listening) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.primaryContainer,
-                        CircleShape,
-                    )
+                    .size(214.dp)
                     .pointerInput(hasMicPermission, ui.busy) {
                         detectTapGestures(
                             onPress = {
@@ -128,28 +122,25 @@ fun VoiceScreen(
                     },
                 contentAlignment = Alignment.Center,
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        if (voice.listening) Icons.Default.Mic else Icons.Default.MicOff,
-                        contentDescription = null,
-                        modifier = Modifier.size(52.dp),
-                        tint = if (voice.listening) MaterialTheme.colorScheme.onPrimary
-                        else MaterialTheme.colorScheme.onPrimaryContainer,
-                    )
-                    Text(
-                        when {
-                            voice.listening -> "Listening…"
-                            voice.speaking -> "Speaking…"
-                            ui.busy -> "Thinking…"
-                            else -> "Hold to talk"
-                        },
-                        style = MaterialTheme.typography.labelLarge,
-                        color = if (voice.listening) MaterialTheme.colorScheme.onPrimary
-                        else MaterialTheme.colorScheme.onPrimaryContainer,
-                    )
-                }
+                VoiceOrb(
+                    active = voice.listening,
+                    speaking = voice.speaking,
+                    amplitude = voice.amplitude,
+                    modifier = Modifier.fillMaxSize(),
+                    iconSize = 52.dp,
+                )
             }
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(14.dp))
+            Text(
+                when {
+                    voice.listening -> "Listening… release to send"
+                    voice.speaking -> "Assistant is speaking"
+                    ui.busy -> "Thinking…"
+                    else -> "Hold the orb to talk"
+                },
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 when {
                     !hasMicPermission -> StatusPill("Mic permission needed", WarningAmber)
@@ -164,7 +155,10 @@ fun VoiceScreen(
             }
             if (voice.listening) {
                 Spacer(Modifier.height(8.dp))
-                LinearProgressIndicator(Modifier.fillMaxWidth())
+                LinearProgressIndicator(
+                    progress = { voice.amplitude.coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
 
             Spacer(Modifier.height(20.dp))
@@ -243,20 +237,20 @@ fun VoiceScreen(
             if (ui.transcript.isNotBlank()) {
                 Spacer(Modifier.height(10.dp))
                 Button(
-                    onClick = { onSendToAutomation(ui.transcript) },
+                    onClick = { onSendToAgent(ui.transcript) },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Icon(Icons.Default.TouchApp, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Icon(Icons.Default.SmartToy, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.size(6.dp))
-                    Text("Use transcript as Android task")
+                    Text("Use transcript in Agent mode")
                 }
             }
             Spacer(Modifier.height(14.dp))
             InfoCard(
-                title = "Raw provider audio is not implemented",
+                title = "Voice + on-device actions",
                 body = "Voice commands are transcribed by Android, sent as text, and spoken with Android TTS. " +
-                    "This is the practical fallback pipeline and works even when a provider has no realtime " +
-                    "audio API. Device actions are executed only from the Automation screen with confirmations.",
+                    "This works even when a provider has no realtime audio API. The transcript can jump " +
+                    "straight into Agent mode in chat, where sensitive actions ask for confirmation.",
                 icon = Icons.Default.Mic,
             )
             Spacer(Modifier.height(20.dp))

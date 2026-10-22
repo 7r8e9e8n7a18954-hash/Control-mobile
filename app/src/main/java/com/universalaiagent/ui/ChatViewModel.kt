@@ -13,6 +13,8 @@ import com.universalaiagent.data.model.Conversation
 import com.universalaiagent.data.model.ImageAttachment
 import com.universalaiagent.data.model.ProviderError
 import com.universalaiagent.data.model.TaskType
+import com.universalaiagent.voice.VoiceManager
+import com.universalaiagent.voice.VoiceManagerState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -44,6 +46,8 @@ data class ChatUiState(
     val sessionLimit: Int = 0,
     val warnBeforeRequests: Boolean = false,
     val awaitingCostWarning: Boolean = false,
+    val agentMode: Boolean = false,
+    val ttsEnabled: Boolean = true,
 )
 
 class ChatViewModel(
@@ -70,11 +74,22 @@ class ChatViewModel(
     private val _ui = MutableStateFlow(ChatUiState())
     val ui: StateFlow<ChatUiState> = _ui
 
+    private val voiceManager = VoiceManager(container.appContext)
+    val voiceState: StateFlow<VoiceManagerState> = voiceManager.state
+
     private var generationJob: Job? = null
     private var initialConversationCreated = false
     private var warnedThisSession = false
+    private var agentConversationId: String? = null
+    private var agentInstructionJob: Job? = null
+    private val reportedAgentTasks = mutableSetOf<String>()
 
     init {
+        viewModelScope.launch {
+            voiceManager.finalResults.collect { text ->
+                _ui.update { it.copy(input = text) }
+            }
+        }
         viewModelScope.launch {
             combine(
                 container.conversations.loaded,
@@ -102,6 +117,7 @@ class ChatViewModel(
                         historyEnabled = settings.historyEnabled,
                         sessionLimit = settings.sessionRequestLimit,
                         warnBeforeRequests = settings.warnBeforeRequests,
+                        ttsEnabled = settings.ttsEnabled,
                     )
                 }
             }
@@ -123,6 +139,85 @@ class ChatViewModel(
 
     fun updateInput(value: String) {
         _ui.update { it.copy(input = value) }
+    }
+
+    fun setAgentMode(enabled: Boolean) {
+        _ui.update { it.copy(agentMode = enabled) }
+    }
+
+    fun toggleAgentMode() {
+        _ui.update { it.copy(agentMode = !it.agentMode) }
+    }
+
+    fun startVoiceInput() {
+        voiceManager.startListening()
+    }
+
+    fun stopVoiceInput() {
+        voiceManager.stopListening()
+    }
+
+    fun setTtsEnabled(enabled: Boolean) {
+        viewModelScope.launch { container.settings.setTtsEnabled(enabled) }
+    }
+
+    fun takeAgentInstruction(): String? {
+        if (_ui.value.isGenerating) return null
+        val state = _ui.value
+        val text = state.input.trim()
+        if (text.isBlank()) return null
+        val current = selectedConversation.value
+        if (current == null) {
+            _ui.update { it.copy(error = "No conversation is selected.") }
+            return null
+        }
+        agentConversationId = current.id
+        _ui.update {
+            it.copy(
+                input = "",
+                attachments = emptyList(),
+                error = null,
+                fallbackNotice = null,
+                status = null,
+            )
+        }
+        agentInstructionJob = viewModelScope.launch {
+            container.conversations.appendMessage(
+                current.id,
+                ChatMessage(
+                    id = UUID.randomUUID().toString(),
+                    role = ChatRole.USER,
+                    content = text,
+                ),
+            )
+        }
+        return text
+    }
+
+    fun appendAgentOutcome(
+        taskId: String,
+        success: Boolean?,
+        report: String?,
+    ) {
+        if (!reportedAgentTasks.add(taskId)) return
+        val conversationId = agentConversationId ?: selectedConversation.value?.id ?: return
+        val heading = if (success == true) "Agent finished" else "Agent stopped"
+        val body = report?.takeIf { it.isNotBlank() } ?: "No report was produced."
+        viewModelScope.launch {
+            agentInstructionJob?.join()
+            agentInstructionJob = null
+            container.conversations.appendMessage(
+                conversationId,
+                ChatMessage(
+                    id = UUID.randomUUID().toString(),
+                    role = ChatRole.ASSISTANT,
+                    content = "$heading: $body",
+                    providerLabel = "Agent",
+                    model = "Accessibility",
+                ),
+            )
+        }
+        agentConversationId = null
     }
 
     fun attachImage(uri: Uri) {
@@ -431,11 +526,17 @@ class ChatViewModel(
         _ui.update { it.copy(error = null, fallbackNotice = null) }
     }
 
+    override fun onCleared() {
+        voiceManager.shutdown()
+        super.onCleared()
+    }
+
     private companion object {
         const val CHAT_SYSTEM_PROMPT =
             "You are Universal AI Agent, a helpful Android assistant. Answer clearly and accurately. " +
-                "Format code in fenced blocks when useful. Never invent API results or claim a device " +
-                "action happened from this chat. Device automation is performed separately and requires " +
-                "the user to enable Android Accessibility. If you are unsure, say so."
+                "Format code in fenced blocks when useful. Never invent API results. When Agent mode is " +
+                "active, the app can control the phone through Android Accessibility, and every on-screen " +
+                "action is confirmed locally. Symptoms like a phone UI or app screen should be explained " +
+                "step by step. If you are unsure, say so."
     }
 }

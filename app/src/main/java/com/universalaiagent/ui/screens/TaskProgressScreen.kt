@@ -114,8 +114,8 @@ fun TaskProgressScreen(
         if (run == null) {
             EmptyState(
                 title = "No task yet",
-                body = "Start a task from Automation. Every step, confirmation and result is logged here " +
-                    "and kept in local history.",
+                body = "Turn on Agent mode in chat and send an instruction. Every step, confirmation " +
+                    "and result is logged here and kept in local history.",
                 modifier = Modifier.padding(padding),
             )
             return@ScreenScaffold

@@ -21,11 +21,11 @@ device to the providers you configure, using keys encrypted on the device.
   discovery is unavailable.
 - **Screen understanding** — explicit Android MediaProjection consent, single-frame capture,
   local preview, optional vision analysis, and a persistent Stop notification.
-- **Accessible automation** — structured JSON action plans (no model-generated code,
-  JavaScript, shell, or coordinates), accessibility snapshots, bounded action counts,
-  loop protection, and sensitive-action confirmations.
-- **Voice assistant** — push-to-talk Android speech recognition, text-to-speech, and an
-  option to send the transcript to the Android task planner.
+- **Agent mode in chat** — structured JSON action plans (no model-generated code,
+  JavaScript, shell, or coordinates), accessibility snapshots, live tap ripples, a floating
+  stop control, and sensitive-action confirmations. The agent keeps working until you cancel.
+- **Voice assistant** — push-to-talk Android speech recognition with a live amplitude orb,
+  text-to-speech, distinct user/assistant haptics, and one-tap handoff to Agent mode.
 - **Local history and diagnostics** — conversations, attachments, request metadata, token
   counts, error categories, and read-only route diagnostics.
 - **Security controls** — Android Keystore AES-GCM key encryption, masked keys, sanitized
@@ -33,9 +33,9 @@ device to the providers you configure, using keys encrypted on the device.
 
 ## Screens
 
-Welcome/onboarding, chat, API key manager, add/edit provider, model browser, routing
-priority, voice assistant, screen understanding, Android automation, task progress,
-history, settings, privacy/security, and diagnostics.
+Welcome/onboarding, chat with Agent mode, API key manager, add/edit provider, model browser,
+routing priority, voice assistant, screen understanding, task progress, history, settings,
+privacy/security, and diagnostics.
 
 ## Requirements
 
@@ -88,14 +88,15 @@ The app requests only permissions that correspond to user-visible features:
 | --- | --- |
 | `INTERNET`, `ACCESS_NETWORK_STATE` | Provider API calls |
 | `RECORD_AUDIO` | Push-to-talk speech recognition |
+| `VIBRATE` | Distinct haptics for user speech and assistant replies |
 | `POST_NOTIFICATIONS` | Screen-sharing foreground notification (Android 13+) |
 | `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MEDIA_PROJECTION` | Screen capture session |
 
 Additional setup:
 
 - **Accessibility**: enable **Universal AI Agent automation** in Android Settings →
-  Accessibility before running UI tasks. The service reads the active window and exposes
-  supported actions only while a task runs.
+  Accessibility before using Agent mode. The service reads the active window, draws the
+  ripple/stop overlay, and exposes supported actions only while a task runs.
 - **Screen understanding**: Android shows its own MediaProjection consent dialog every time.
   Sharing is visible in the notification shade and can be stopped there or in the app.
 - **Voice**: the first microphone use asks for permission. Android or the device's
@@ -111,12 +112,18 @@ arbitrary code or coordinates.
 
 Enforced locally:
 
-- maximum 20 executed actions and 6 planning rounds per task;
-- the same action signature three times stops the run;
-- sensitive or irreversible actions require confirmation (configurable in Settings);
+- the agent runs until it reports completion, hits an unrecoverable action failure, or you
+  press **Cancel** in chat or the floating overlay;
+- three planning rounds with no screen change (outside scrolling/waiting) stop the run as
+  loop protection;
+- sensitive or irreversible actions require confirmation and wait as long as needed;
 - the planner is told not to bypass lock screens, biometrics, passwords, or Android
   security dialogs;
 - password fields are not read by the accessibility snapshot code.
+
+While a task runs, a small draggable overlay shows **Screen / Sound / Stop** controls and
+paints a ripple wherever the agent taps, types, or scrolls. **Screen** hides or shows the
+touch indicators, **Sound** toggles spoken feedback, and **Stop** cancels immediately.
 
 Automation uses accessibility only. It cannot unlock a locked device, defeat secure windows,
 or grant permissions that Android requires the user to grant directly.

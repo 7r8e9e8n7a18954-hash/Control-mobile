@@ -18,7 +18,7 @@ data class UiSnapshot(
     val appLabel: String,
     val elements: List<UiElement>,
 ) {
-    fun toPrompt(maxElements: Int = 120): String {
+    fun toPrompt(maxElements: Int = 80): String {
         val header = "Current app: $appLabel ($packageName)"
         if (elements.isEmpty()) return "$header\nNo readable UI elements were exposed."
         val rows = elements.take(maxElements).joinToString("\n") { element ->

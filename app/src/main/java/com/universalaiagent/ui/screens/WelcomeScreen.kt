@@ -121,8 +121,9 @@ fun WelcomeScreen(
             )
             FeatureRow(
                 icon = Icons.Default.TouchApp,
-                title = "Accessible automation",
-                body = "Structured UI actions through Android Accessibility — never generated executable code.",
+                title = "Agent mode in chat",
+                body = "Ask for a task and watch the agent tap, type, and scroll with live ripple overlays — " +
+                    "stop it any time from the floating orb or chat controls.",
             )
             FeatureRow(
                 icon = Icons.Default.Mic,

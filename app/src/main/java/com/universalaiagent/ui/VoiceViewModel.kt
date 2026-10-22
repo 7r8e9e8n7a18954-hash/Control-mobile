@@ -160,6 +160,6 @@ class VoiceViewModel(
             "You are Universal AI Agent in a voice conversation. Answer concisely in plain language, " +
                 "because the response will be spoken aloud. Avoid markdown tables and long code blocks. " +
                 "You cannot perform Android actions from this voice response; if the user wants an action, " +
-                "briefly confirm what they asked and tell them to use the Android automation screen."
+                "briefly confirm what they asked and tell them to use Agent mode in chat."
     }
 }

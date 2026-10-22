@@ -6,6 +6,7 @@ import com.universalaiagent.AppContainer
 import com.universalaiagent.automation.ActionValidator
 import com.universalaiagent.automation.AgentAction
 import com.universalaiagent.automation.AgentAccessibilityService
+import com.universalaiagent.automation.AgentRuntime
 import com.universalaiagent.automation.StepStatus
 import com.universalaiagent.automation.TaskRun
 import com.universalaiagent.automation.UiSnapshot
@@ -26,7 +27,6 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 
 data class PendingConfirmation(
     val reason: String,
@@ -67,6 +67,11 @@ class AutomationViewModel(
                 confirmSensitive = it.confirmSensitiveActions
             }
         }
+        viewModelScope.launch {
+            AgentRuntime.stopRequests.collect {
+                if (_ui.value.running) stopTask()
+            }
+        }
         refresh()
     }
 
@@ -84,11 +89,7 @@ class AutomationViewModel(
                 it.copy(
                     apps = apps,
                     snapshot = snapshot,
-                    error = if (!container.actionEngine.isAccessibilityConnected()) {
-                        "Accessibility service is off. Enable it in Android Settings to read or control other apps."
-                    } else {
-                        null
-                    },
+                    error = null,
                 )
             }
         }
@@ -113,19 +114,20 @@ class AutomationViewModel(
         if (instruction.isBlank() || _ui.value.running) return
         if (!container.actionEngine.isAccessibilityConnected()) {
             _ui.update {
-                it.copy(error = "Enable the accessibility service before running an automation task.")
+                it.copy(error = "Enable the accessibility service before running an agent task.")
             }
             return
         }
         taskJob = viewModelScope.launch {
             _ui.update { it.copy(running = true, error = null, status = "Planning…") }
+            AgentRuntime.setActive(true)
+            container.actionEngine.showOverlay()
             container.taskStore.start(instruction)
             val executed = mutableListOf<String>()
-            val actionCounts = mutableMapOf<String, Int>()
             var totalActions = 0
-            var screenChanges = 0
             var success = false
             var report = "Task did not finish."
+            var staleBatches = 0
             try {
                 var snapshot = withContext(Dispatchers.Default) {
                     container.actionEngine.snapshot()
@@ -133,11 +135,7 @@ class AutomationViewModel(
                 _ui.update { it.copy(snapshot = snapshot) }
                 var finished = false
                 var round = 1
-                while (round <= MAX_ROUNDS && !finished) {
-                    if (totalActions >= MAX_ACTIONS) {
-                        report = "Stopped after the $MAX_ACTIONS action safety limit. The task may be incomplete."
-                        break
-                    }
+                while (!finished) {
                     _ui.update { it.copy(status = "Planning round $round…") }
                     val planPrompt = buildPlanPrompt(
                         instruction = instruction,
@@ -151,7 +149,7 @@ class AutomationViewModel(
                         request = AiRequest(
                             systemPrompt = AUTOMATION_SYSTEM_PROMPT,
                             messages = listOf(ChatTurn("user", planPrompt)),
-                            maxOutputTokens = 1000,
+                            maxOutputTokens = 700,
                         ),
                         onDelta = {},
                         onNotice = { notice ->
@@ -164,22 +162,17 @@ class AutomationViewModel(
                             plan.errors.joinToString(" ").ifBlank { "No actions were proposed." }
                         break
                     }
+                    val beforeHash = snapshot.toPrompt().hashCode()
+                    val batchCountsAsProgress = plan.actions.any {
+                        it is AgentAction.Scroll || it is AgentAction.Wait || it is AgentAction.ReadScreen
+                    }
                     for (action in plan.actions) {
-                        if (totalActions >= MAX_ACTIONS) break
-                        val signature = ActionValidator.signature(action)
-                        val count = (actionCounts[signature] ?: 0) + 1
-                        actionCounts[signature] = count
-                        if (count >= 3) {
-                            report = "Stopped because the same action repeated three times (loop protection)."
-                            finished = true
-                            break
-                        }
                         when (action) {
                             is AgentAction.FinishTask -> {
                                 finished = true
-                                success = screenChanges > 0
+                                success = totalActions > 0
                                 report = "The assistant marked the task finished after $totalActions actions. " +
-                                    "The screen changed $screenChanges time(s). Verify the result on the device."
+                                    "Verify the result on the device."
                                 container.taskStore.addStep(
                                     "Finished",
                                     "Model-reported completion",
@@ -214,7 +207,6 @@ class AutomationViewModel(
                         totalActions++
                         _ui.update { it.copy(status = actionLabel) }
                         container.taskStore.addStep(actionLabel, "Executing", StepStatus.RUNNING)
-                        val beforeSignature = snapshot.toPrompt().hashCode()
                         val result = withContext(Dispatchers.Default) {
                             container.actionEngine.execute(action, instruction)
                         }
@@ -228,32 +220,45 @@ class AutomationViewModel(
                         container.taskStore.updateLastStep(StepStatus.SUCCESS, result.message)
                         executed += "$actionLabel — ${result.message}"
                         if (action !is AgentAction.ReadScreen && action !is AgentAction.Wait) {
-                            delay(UI_SETTLE_MS)
-                            val next = withContext(Dispatchers.Default) {
-                                container.actionEngine.snapshot()
+                            val settle = when (action) {
+                                is AgentAction.LaunchApp -> LAUNCH_SETTLE_MS
+                                is AgentAction.InputText -> INPUT_SETTLE_MS
+                                AgentAction.PressBack -> BACK_SETTLE_MS
+                                else -> UI_SETTLE_MS
                             }
-                            if (next != null) {
-                                snapshot = next
-                                _ui.update { it.copy(snapshot = next) }
-                                if (next.toPrompt().hashCode() != beforeSignature) {
-                                    screenChanges++
-                                }
-                            }
-                        } else if (result.snapshot != null) {
-                            snapshot = result.snapshot
-                            _ui.update { it.copy(snapshot = snapshot) }
+                            delay(settle)
                         }
                     }
                     if (!finished) {
-                        snapshot = withContext(Dispatchers.Default) {
+                        val next = withContext(Dispatchers.Default) {
                             container.actionEngine.snapshot()
-                        } ?: snapshot
-                        _ui.update { it.copy(snapshot = snapshot) }
+                        }
+                        if (next != null) {
+                            snapshot = next
+                            _ui.update { it.copy(snapshot = next) }
+                            if (totalActions > 0 &&
+                                next.packageName == container.appContext.packageName
+                            ) {
+                                report = "Stopped because Universal AI Agent came to the foreground. " +
+                                    "Return to the target app and run the task again."
+                                success = false
+                                finished = true
+                            } else {
+                                val changed = next.toPrompt().hashCode() != beforeHash
+                                if (!changed && !batchCountsAsProgress) {
+                                    staleBatches++
+                                    if (staleBatches >= 3) {
+                                        report = "Stopped because the screen did not change across three " +
+                                            "planning rounds. The task may be stuck."
+                                        finished = true
+                                    }
+                                } else {
+                                    staleBatches = 0
+                                }
+                            }
+                        }
                     }
                     round++
-                }
-                if (round > MAX_ROUNDS && !finished) {
-                    report = "Stopped after $MAX_ROUNDS planning rounds. The task may be incomplete."
                 }
             } catch (cancelled: CancellationException) {
                 report = "Task stopped by user."
@@ -268,6 +273,8 @@ class AutomationViewModel(
             } finally {
                 container.taskStore.finish(report, success)
                 _ui.update { it.copy(running = false, status = report) }
+                container.actionEngine.hideOverlay()
+                AgentRuntime.setActive(false)
             }
         }
     }
@@ -292,14 +299,18 @@ class AutomationViewModel(
         confirmationDeferred = deferred
         _pendingConfirmation.value = PendingConfirmation(reason, action)
         container.taskStore.addStep("Confirmation required", reason, StepStatus.WAITING)
-        val result = withTimeoutOrNull(CONFIRM_TIMEOUT_MS) { deferred.await() } ?: false
-        _pendingConfirmation.value = null
-        confirmationDeferred = null
-        container.taskStore.updateLastStep(
-            if (result) StepStatus.SUCCESS else StepStatus.SKIPPED,
-            if (result) "User approved" else "User declined or timed out",
-        )
-        return result
+        var result = false
+        try {
+            result = deferred.await()
+            return result
+        } finally {
+            _pendingConfirmation.value = null
+            confirmationDeferred = null
+            container.taskStore.updateLastStep(
+                if (result) StepStatus.SUCCESS else StepStatus.SKIPPED,
+                if (result) "User approved" else "User declined or stopped the task",
+            )
+        }
     }
 
     private fun buildPlanPrompt(
@@ -311,15 +322,21 @@ class AutomationViewModel(
     ): String = buildString {
         appendLine("User instruction: $instruction")
         appendLine("Planning round: $round")
+        if (snapshot.packageName == container.appContext.packageName) {
+            appendLine("The current app is Universal AI Agent itself. If the user targets another app, " +
+                "start with launch_app for that app.")
+        }
         appendLine()
         appendLine("Actions already executed:")
-        if (executed.isEmpty()) appendLine("(none)") else executed.takeLast(12).forEach { appendLine("- $it") }
+        if (executed.isEmpty()) appendLine("(none)") else executed.takeLast(8).forEach { appendLine("- $it") }
         appendLine()
-        appendLine("Installed launchable apps: ${apps.take(40).joinToString { it.label }}")
+        if (round == 1) {
+            appendLine("Installed launchable apps: ${apps.take(30).joinToString { it.label }}")
+            appendLine()
+        }
+        appendLine(snapshot.toPrompt(maxElements = 80))
         appendLine()
-        appendLine(snapshot.toPrompt())
-        appendLine()
-        append("Return the next 1-4 actions as JSON only.")
+        append("Return the next 1-6 actions as JSON only. Continue until the task is complete.")
     }
 
     private fun describe(action: AgentAction): String = when (action) {
@@ -335,10 +352,10 @@ class AutomationViewModel(
     }
 
     private companion object {
-        const val MAX_ROUNDS = 6
-        const val MAX_ACTIONS = 20
-        const val UI_SETTLE_MS = 700L
-        const val CONFIRM_TIMEOUT_MS = 120_000L
+        const val UI_SETTLE_MS = 160L
+        const val INPUT_SETTLE_MS = 220L
+        const val BACK_SETTLE_MS = 260L
+        const val LAUNCH_SETTLE_MS = 900L
         const val AUTOMATION_SYSTEM_PROMPT =
             "You are an Android UI automation planner. Respond with ONLY a JSON object in this shape: " +
                 "{\"actions\":[{\"action\":\"click\",\"target\":\"Search\",\"reason\":\"...\"}]}. " +
@@ -348,11 +365,12 @@ class AutomationViewModel(
                 "Use only visible elements from the provided screen snapshot, preferring exact text, " +
                 "content description, or view ID as the target. Never output coordinates, Kotlin, " +
                 "JavaScript, shell commands, or code. Complete the user's instruction with supported UI " +
-                "actions instead of refusing. Insert request_confirmation before sending messages, " +
-                "publishing, purchasing, transferring money, deleting important data, changing security " +
-                "settings, or granting permissions. Never attempt to bypass biometrics, lock screens, " +
-                "passwords, or Android security dialogs. Emit finish_task only when the screen shows the " +
-                "instruction is complete. If the needed UI is not visible, use launch_app/read_screen or " +
-                "return an empty actions array."
+                "actions instead of refusing. Plan several actions per round when the flow is obvious. " +
+                "Insert request_confirmation before sending messages, publishing, purchasing, transferring " +
+                "money, deleting important data, changing security settings, or granting permissions. " +
+                "Never attempt to bypass biometrics, lock screens, passwords, or Android security dialogs. " +
+                "Emit finish_task only when the screen shows the instruction is complete. If the needed UI " +
+                "is not visible, use launch_app/read_screen or scroll. Avoid repeating the same " +
+                "non-scroll action unless the screen changes."
     }
 }

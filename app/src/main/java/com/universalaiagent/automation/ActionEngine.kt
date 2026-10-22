@@ -5,6 +5,7 @@ import android.accessibilityservice.GestureDescription
 import android.content.Context
 import android.content.Intent
 import android.graphics.Path
+import android.graphics.Rect
 import android.os.Bundle
 import android.view.accessibility.AccessibilityNodeInfo
 import com.universalaiagent.data.model.AppEntry
@@ -26,6 +27,10 @@ class ActionEngine(
     fun isAccessibilityConnected(): Boolean = AgentAccessibilityService.isConnected()
 
     fun snapshot(): UiSnapshot? = AgentAccessibilityService.current()?.snapshot()
+
+    fun showOverlay() = AgentAccessibilityService.current()?.showAgentOverlay()
+
+    fun hideOverlay() = AgentAccessibilityService.current()?.hideAgentOverlay()
 
     @Suppress("DEPRECATION")
     fun installedApps(): List<AppEntry> {
@@ -106,6 +111,11 @@ class ActionEngine(
         launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         return runCatching {
             context.startActivity(launchIntent)
+            val metrics = context.resources.displayMetrics
+            AgentAccessibilityService.current()?.showAgentTap(
+                metrics.widthPixels / 2f,
+                metrics.heightPixels / 2f,
+            )
             ActionResult(true, "Launched ${target.label}.")
         }.getOrElse {
             ActionResult(false, "Android blocked launching ${target.label}: ${it.message}")
@@ -124,15 +134,59 @@ class ActionEngine(
         if (clickable == null) {
             return ActionResult(false, "\"${action.target}\" is visible but not clickable.")
         }
+        val rect = Rect()
+        clickable.getBoundsInScreen(rect)
+        val x = rect.exactCenterX()
+        val y = rect.exactCenterY()
         val performed = clickable.performAction(
             if (action.longPress) AccessibilityNodeInfo.ACTION_LONG_CLICK
             else AccessibilityNodeInfo.ACTION_CLICK,
         )
-        return if (performed) {
-            ActionResult(true, "${if (action.longPress) "Long-clicked" else "Clicked"} \"${action.target}\".")
+        if (performed) {
+            service.showAgentTap(x, y)
+            return ActionResult(true, "${if (action.longPress) "Long-clicked" else "Clicked"} \"${action.target}\".")
+        }
+        val duration = if (action.longPress) 650L else 60L
+        val fallback = dispatchTap(service, x, y, duration)
+        return if (fallback) {
+            service.showAgentTap(x, y)
+            ActionResult(
+                true,
+                "${if (action.longPress) "Long-pressed" else "Tapped"} \"${action.target}\" with a touch gesture.",
+            )
         } else {
             ActionResult(false, "The app rejected the click on \"${action.target}\".")
         }
+    }
+
+    private suspend fun dispatchTap(
+        service: AgentAccessibilityService,
+        x: Float,
+        y: Float,
+        durationMs: Long,
+    ): Boolean {
+        val path = Path().apply {
+            moveTo(x, y)
+            lineTo(x + 1f, y)
+        }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, durationMs))
+            .build()
+        val result = CompletableDeferred<Boolean>()
+        service.dispatchGesture(
+            gesture,
+            object : AccessibilityService.GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    result.complete(true)
+                }
+
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    result.complete(false)
+                }
+            },
+            null,
+        )
+        return withTimeoutOrNull(3000) { result.await() } ?: false
     }
 
     private suspend fun scroll(service: AgentAccessibilityService, direction: String): ActionResult {
@@ -143,7 +197,12 @@ class ActionEngine(
                 if (direction == "forward") AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
                 else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD,
             )
-            if (ok) return ActionResult(true, "Scrolled $direction.")
+            if (ok) {
+                val rect = Rect()
+                scrollable.getBoundsInScreen(rect)
+                service.showAgentTap(rect.exactCenterX(), rect.exactCenterY())
+                return ActionResult(true, "Scrolled $direction.")
+            }
         }
         val metrics = context.resources.displayMetrics
         val width = metrics.widthPixels / 2f
@@ -172,6 +231,9 @@ class ActionEngine(
             null,
         )
         val completed = withTimeoutOrNull(3000) { result.await() } ?: false
+        if (completed) {
+            service.showAgentTap(width, (startY + endY) / 2f)
+        }
         return ActionResult(
             completed,
             if (completed) "Scrolled $direction using a gesture fallback." else "Could not scroll this screen.",
@@ -197,6 +259,9 @@ class ActionEngine(
         }
         val ok = editable.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
         return if (ok) {
+            val rect = Rect()
+            editable.getBoundsInScreen(rect)
+            service.showAgentTap(rect.exactCenterX(), rect.exactCenterY())
             ActionResult(true, "Entered ${action.text.length} characters.")
         } else {
             ActionResult(false, "The app rejected setting text in this field.")

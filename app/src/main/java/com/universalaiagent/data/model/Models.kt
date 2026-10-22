@@ -34,7 +34,7 @@ enum class TaskType(val label: String, val description: String) {
     AUDIO_INPUT("Audio input", "Provider audio understanding"),
     AUDIO_OUTPUT("Audio output", "Spoken responses"),
     SCREEN_ANALYSIS("Screen analysis", "Understand a captured screen"),
-    ACTION_PLANNING("Android automation", "Plan and execute UI actions"),
+    ACTION_PLANNING("Agent tasks", "Plan and execute on-device UI actions"),
     ;
 
     val requiresVision: Boolean
